@@ -7,6 +7,41 @@ import numpy as np
 pygame.init()
 pygame.font.init()
 
+def get_gaze_zone(gaze_point, screen_width, screen_height):
+    """
+    Determine which of the 9 zones the gaze point is located in.
+    Zones are arranged in a 3x3 grid:
+    1 2 3
+    4 5 6
+    7 8 9
+    """
+    x, y = gaze_point
+    
+    # Calculate zone boundaries
+    zone_width = screen_width / 3
+    zone_height = screen_height / 3
+    
+    # Determine column (1, 2, or 3)
+    if x < zone_width:
+        col = 1
+    elif x < 2 * zone_width:
+        col = 2
+    else:
+        col = 3
+    
+    # Determine row (1, 2, or 3)
+    if y < zone_height:
+        row = 1
+    elif y < 2 * zone_height:
+        row = 2
+    else:
+        row = 3
+    
+    # Calculate zone number (1-9)
+    zone = (row - 1) * 3 + col
+    
+    return zone, (col - 1) * zone_width, (row - 1) * zone_height, zone_width, zone_height
+
 # Get the display dimensions
 screen_info = pygame.display.Info()
 screen_width = screen_info.current_w
@@ -98,10 +133,35 @@ while running:
             screen.blit(text_surface, text_square)
         else:
             pass
+        # Draw gaze point
         if gestures.whichAlgorithm(context="my_context") == "Ridge":
             pygame.draw.circle(screen, RED, event.point, 50)
         if gestures.whichAlgorithm(context="my_context") == "LassoCV":
             pygame.draw.circle(screen, BLUE, event.point, 50)
+        
+        # Zone detection and visualization
+        if not calibrate:  # Only show zones when not calibrating
+            zone, zone_x, zone_y, zone_width, zone_height = get_gaze_zone(event.point, screen_width, screen_height)
+            
+            # Create a semi-transparent overlay for the active zone
+            zone_surface = pygame.Surface((zone_width, zone_height))
+            zone_surface.set_alpha(100)  # Semi-transparent
+            zone_surface.fill((255, 255, 0))  # Yellow illumination
+            screen.blit(zone_surface, (zone_x, zone_y))
+            
+            # Draw zone boundaries
+            for i in range(4):  # 3x3 grid needs 4 lines each direction
+                # Vertical lines
+                pygame.draw.line(screen, WHITE, (i * zone_width, 0), (i * zone_width, screen_height), 2)
+                # Horizontal lines
+                pygame.draw.line(screen, WHITE, (0, i * zone_height), (screen_width, i * zone_height), 2)
+            
+            # Display zone number
+            zone_font = pygame.font.SysFont('Comic Sans MS', 60)
+            zone_text = zone_font.render(f'Zone {zone}', True, WHITE)
+            text_rect = zone_text.get_rect(center=(zone_x + zone_width/2, zone_y + zone_height/2))
+            screen.blit(zone_text, text_rect)
+        
         my_font = pygame.font.SysFont('Comic Sans MS', 30)
         text_surface = my_font.render(f'{gestures.whichAlgorithm(context="my_context")}', False, (0, 0, 0))
         screen.blit(text_surface, event.point)
