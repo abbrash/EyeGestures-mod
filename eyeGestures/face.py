@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import eyeGestures.eye as eye
+from eyeGestures.head_pose import HeadPoseCompensator
 
 
 class FaceFinder:
@@ -39,6 +40,9 @@ class Face:
         self.eyeLeft = eye.Eye(0)
         self.eyeRight = eye.Eye(1)
         self.landmarks = None
+        self.head_pose_compensator = HeadPoseCompensator()
+        self.head_pose_data = None
+        self.reference_set = False
 
     def getBoundingBox(self):
         if self.landmarks is not None:
@@ -63,6 +67,25 @@ class Face:
 
     def getLandmarks(self):
         return self.landmarks
+    
+    def getHeadPoseData(self):
+        """Get current head pose compensation data."""
+        return self.head_pose_data
+    
+    def setReferencePose(self):
+        """Set the current pose as reference for compensation."""
+        if self.landmarks is not None:
+            success = self.head_pose_compensator.set_reference_pose(
+                self.landmarks, self.image_w, self.image_h
+            )
+            self.reference_set = success
+            return success
+        return False
+    
+    def resetReferencePose(self):
+        """Reset the reference pose."""
+        self.head_pose_compensator.reset_reference()
+        self.reference_set = False
 
     def _landmarks(self, face):
 
@@ -82,11 +105,25 @@ class Face:
         self.face = face
         self.image_h, self.image_w, _ = image.shape
         self.landmarks = self._landmarks(self.face)
-        # self.nose = nose.Nose(image,self.landmarks,self.getBoundingBox())
+        
+        # Estimate head pose and get compensation data
+        self.head_pose_data = self.head_pose_compensator.get_pose_compensation(
+            self.landmarks, self.image_w, self.image_h
+        )
+        
+        # Set reference pose if not already set
+        if not self.reference_set and self.head_pose_data['success']:
+            self.setReferencePose()
 
         x, y, _, _ = self.getBoundingBox()
         offset = np.array((x, y))
-        # offset = offset - self.nose.getHeadTiltOffset()
+        
+        # Apply head pose compensation to offset if available
+        if self.head_pose_data['success']:
+            # Adjust offset based on head pose
+            tilt_compensation = self.head_pose_data['tilt_angle'] * 0.1
+            offset[0] += tilt_compensation
+            offset[1] += self.head_pose_data['compensation_y'] * 0.05
 
         self.eyeLeft.update(image, self.landmarks, offset)
         self.eyeRight.update(image, self.landmarks, offset)

@@ -44,6 +44,11 @@ class EyeGestures_v3:
 
         self.starting_head_position = np.zeros((1,2))
         self.starting_size = np.zeros((1,2))
+        
+        # Head pose compensation
+        self.enable_head_pose_compensation = True
+        self.head_pose_compensation_history = []
+        self.max_compensation_history = 5
 
     def saveModel(self, context = "main"):
         if context in self.clb:
@@ -55,6 +60,56 @@ class EyeGestures_v3:
     def uploadCalibrationMap(self,points,context = "main"):
         self.addContext(context)
         self.clb[context].updMatrix(np.array(points))
+    
+    def enableHeadPoseCompensation(self, enable=True):
+        """Enable or disable head pose compensation."""
+        self.enable_head_pose_compensation = enable
+    
+    def resetHeadPoseReference(self):
+        """Reset the head pose reference for compensation."""
+        self.face.resetReferencePose()
+    
+    def _apply_head_pose_compensation(self, landmarks, head_pose_data):
+        """Apply head pose compensation to eye landmarks."""
+        if not head_pose_data['success']:
+            return landmarks
+        
+        # Get smoothed compensation from history
+        if len(self.head_pose_compensation_history) > 1:
+            # Average the compensation values for smoothing
+            avg_comp_x = np.mean([h['compensation_x'] for h in self.head_pose_compensation_history])
+            avg_comp_y = np.mean([h['compensation_y'] for h in self.head_pose_compensation_history])
+            avg_tilt = np.mean([h['tilt_angle'] for h in self.head_pose_compensation_history])
+        else:
+            avg_comp_x = head_pose_data['compensation_x']
+            avg_comp_y = head_pose_data['compensation_y']
+            avg_tilt = head_pose_data['tilt_angle']
+        
+        # Apply tilt rotation to landmarks
+        tilt_angle_rad = np.radians(avg_tilt)
+        cos_tilt = np.cos(tilt_angle_rad)
+        sin_tilt = np.sin(tilt_angle_rad)
+        
+        # Find center of landmarks for rotation
+        center_x = np.mean(landmarks[:, 0])
+        center_y = np.mean(landmarks[:, 1])
+        
+        # Apply rotation and compensation
+        compensated_landmarks = landmarks.copy()
+        for i in range(len(landmarks)):
+            # Translate to center
+            x_centered = landmarks[i, 0] - center_x
+            y_centered = landmarks[i, 1] - center_y
+            
+            # Apply rotation
+            x_rotated = x_centered * cos_tilt - y_centered * sin_tilt
+            y_rotated = x_centered * sin_tilt + y_centered * cos_tilt
+            
+            # Apply compensation and translate back
+            compensated_landmarks[i, 0] = x_rotated + center_x - avg_comp_x * 2.0
+            compensated_landmarks[i, 1] = y_rotated + center_y - avg_comp_y * 2.0
+        
+        return compensated_landmarks
 
     def getLandmarks(self, frame):
 
@@ -91,6 +146,20 @@ class EyeGestures_v3:
             head_offset = np.array([[x_offset,y_offset]]) - self.starting_head_position
             scale_x = self.starting_size[0,0]/x_width
             scale_y = self.starting_size[0,1]/y_width
+
+        # Get head pose compensation data
+        head_pose_data = self.face.getHeadPoseData()
+        
+        # Apply head pose compensation to eye landmarks if enabled
+        if self.enable_head_pose_compensation and head_pose_data and head_pose_data['success']:
+            # Compensate for head tilt and movement
+            l_eye_landmarks = self._apply_head_pose_compensation(l_eye_landmarks, head_pose_data)
+            r_eye_landmarks = self._apply_head_pose_compensation(r_eye_landmarks, head_pose_data)
+            
+            # Add head pose data to compensation history for smoothing
+            self.head_pose_compensation_history.append(head_pose_data)
+            if len(self.head_pose_compensation_history) > self.max_compensation_history:
+                self.head_pose_compensation_history.pop(0)
 
         # eye_events = np.array([event.blink,event.fixation]).reshape(1, 2)
         key_points = np.concatenate((l_eye_landmarks,r_eye_landmarks,np.array([[scale_x,scale_y]]),head_offset))
@@ -171,6 +240,17 @@ class EyeGestures_v3:
 
         saccades = velocity > (self.velocity_max[context])/4
 
+        # Apply final head pose compensation to gaze point
+        final_gaze_point = averaged_point.copy()
+        if self.enable_head_pose_compensation and len(self.head_pose_compensation_history) > 0:
+            # Get the most recent head pose data
+            latest_pose_data = self.head_pose_compensation_history[-1]
+            if latest_pose_data['success']:
+                # Apply compensation to the final gaze point
+                final_gaze_point = self.face.head_pose_compensator.apply_compensation(
+                    averaged_point, latest_pose_data
+                )
+
         if self.calibration[context] and (self.clb[context].insideClbRadius(averaged_point,width,height) or self.filled_points[context] < self.average_points[context].shape[0] * 10):
             self.clb[context].add(key_points,self.clb[context].getCurrentPoint(width,height))
         else: 
@@ -181,7 +261,7 @@ class EyeGestures_v3:
                 self.clb[context].movePoint()
 
         gevent = Gevent(
-            point=averaged_point,
+            point=final_gaze_point,
             blink=blink,
             fixation=fixation,
             saccades=saccades,
